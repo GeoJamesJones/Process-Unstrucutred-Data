@@ -6,6 +6,23 @@ import logging
 import os
 import requests
 import json
+import arcpy
+
+def get_head(text, headpos, numchars):
+    """Return text before start of entity."""
+    wheretostart = headpos - numchars
+    if wheretostart < 0:
+        wheretostart = 0
+    thehead = text[wheretostart: headpos]
+    return thehead
+
+def get_tail(text, tailpos, numchars):
+    """Return text at end of entity."""
+    wheretoend = tailpos + numchars
+    if wheretoend > len(text):
+        wheretoend = len(text)
+    thetail = text[tailpos: wheretoend]
+    return thetail
 
 def geocode_address(address):
     """Use World Geocoder to get XY for one address at a time."""
@@ -59,7 +76,9 @@ def extract_entities(nlp_processor, file_name, text):
                                         "entity": e.text, 
                                         "spatial_entity": True,
                                         "lat": location["y"],
-                                        "lon": location["x"]
+                                        "lon": location["x"],
+                                        "pre-text": get_head(text, e.start_char, 255),
+                                        "post-text": get_tail(text, e.end_char, 255)
                                         })
             else:
                 entity_list.append({
@@ -67,7 +86,9 @@ def extract_entities(nlp_processor, file_name, text):
                                     "entity_id":e.label, 
                                     "entity_type":e.label_, 
                                     "entity": e.text, 
-                                    "spatial_entity": False
+                                    "spatial_entity": False,
+                                    "pre-text": get_head(text, e.start_char, 255),
+                                    "post-text": get_tail(text, e.end_char, 255)
                                     })
 
     return entity_list
@@ -77,7 +98,8 @@ def main():
     nlp = spacy.load("en_core_web_sm")
 
     # Define top level directory
-    top_dir = r'/Users/jame9353/Documents/GitHub/SampleData/GulfWarIIRS'
+    top_dir = r'C:\Users\jame9353\Documents\SampleData-master\GulfWarIIRS'
+    out_gdb = r'C:\Users\jame9353\Documents\ArcGIS\Projects\Test\Test.gdb'
     logging.info('Beginning scan of {}'.format(top_dir))
     print("STARTING")
 
@@ -113,6 +135,8 @@ def main():
 
                 # Filters to a list of just spatial entities to allow for creation of output feature class
                 spatial_entities = list(filter(lambda spatial: spatial['spatial_entity'] == True, entities))
+
+                print(spatial_entities)
                 
 
 if __name__ == "__main__":
