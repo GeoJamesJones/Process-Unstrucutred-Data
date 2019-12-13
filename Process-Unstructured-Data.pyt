@@ -4,12 +4,22 @@ import arcpy
 import os
 import json
 import spacy
+import requests
 
 class BaseTool(object):
     def __init__(self):
         """Define the tool (tool name is the name of the class)."""
         self.label = "Base Tools"
         self.description = ""
+
+    def validate_workspace(self, input_workspace=None):
+        desc = arcpy.Describe(input_workspace)
+        if arcpy.Exists(input_workspace) == False:
+            return False
+        elif desc.dataType != 'Workspace':
+            return False
+        else:
+            return True
 
     def get_head(self, text=None, headpos=0, numchars=0):
         """Return text before start of entity."""
@@ -30,8 +40,6 @@ class BaseTool(object):
     def geocode_address(self, address):
         """Use World Geocoder to get XY for one address at a time."""
         
-        logging.info("Geocoding " + address)
-        
         querystring = {
             "f": "json",
             "singleLine": address}
@@ -42,15 +50,12 @@ class BaseTool(object):
         
         try:
             location = j['candidates'][0]['location']  # returns first location as X, Y
-            logging.info("Geocoded results: {}".format(str(location)))
                 
             return location
         except IndexError:
-            logging.error("Index Error on {}".format(address))
             return "IndexError"
 
     def extract_entities(self, nlp_processor, file_name, text):
-        logging.info("Processing {}".format(file_name))
         
         # Process data with SpaCy
         doc = nlp_processor(text)
@@ -68,7 +73,7 @@ class BaseTool(object):
 
                     # Geocode location
                     
-                    location = geocode_address(e.text)
+                    location = self.geocode_address(e.text)
 
                     if location != "IndexError":
 
@@ -80,8 +85,8 @@ class BaseTool(object):
                                             "spatial_entity": True,
                                             "lat": location["y"],
                                             "lon": location["x"],
-                                            "pre-text": get_head(text, e.start_char, 255),
-                                            "post-text": get_tail(text, e.end_char, 255)
+                                            "pre-text": self.get_head(text, e.start_char, 255),
+                                            "post-text": self.get_tail(text, e.end_char, 255)
                                             })
                 else:
                     entity_list.append({
@@ -90,8 +95,8 @@ class BaseTool(object):
                                         "entity_type":e.label_, 
                                         "entity": e.text, 
                                         "spatial_entity": False,
-                                        "pre-text": get_head(text, e.start_char, 255),
-                                        "post-text": get_tail(text, e.end_char, 255)
+                                        "pre-text": self.get_head(text, e.start_char, 255),
+                                        "post-text": self.get_tail(text, e.end_char, 255)
                                         })
 
         return entity_list
@@ -144,6 +149,26 @@ class BaseTool(object):
                 cursor.insertRow(row)
         arcpy.AddMessage("Successfully inserted locations into output feature class")
 
+    def process_text(self, nlp_processor=None, text=None, document=None, output_fc=None, output_fields=None):
+        arcpy.AddMessage('Beginning scan of {}'.format(document))
+
+        try:
+            nlp_text = (text)
+            entities = self.extract_entities(nlp_processor, document, nlp_text)
+            arcpy.AddMessage("Found {} entities in {}".format(str(len(entities)), document))
+
+            # Filters to a list of just spatial entities to allow for creation of output feature class
+            spatial_entities = list(filter(lambda spatial: spatial['spatial_entity'] == True, entities))
+
+            arcpy.AddMessage("{} locations were found in {}".format(str(len(spatial_entities)), document))
+
+            # Inserts the spatial entities into the output feature class
+            self.insert_row(output_fc, output_fields, spatial_entities)
+        except UnicodeDecodeError:
+            arcpy.AddError("Unicode Decode Error for {}".format(document))
+        except Exception as e:
+            arcpy.AddError(e)
+
 
 class Toolbox(object):
     def __init__(self):
@@ -175,7 +200,15 @@ class ExtractLocations(BaseTool):
             multiValue=True
         )
 
-        params = [input_files]
+        output_workspace = arcpy.Parameter(
+            name="out_ws",
+            displayName="Output Workspace",
+            direction="Input",
+            datatype="DEWorkspace",
+            parameterType="Required"
+        )
+
+        params = [input_files, output_workspace]
         return params
 
     def isLicensed(self):
@@ -196,5 +229,33 @@ class ExtractLocations(BaseTool):
     def execute(self, parameters, messages):
         """The source code of the tool."""
         input_documents = parameters[0].valueAsText
+        output_workspace = parameters[1].valueAsText
+
+        individual_files = input_documents.split(";")
+        
+        nlp = spacy.load("en_core_web_sm")
+
+        # Validates the output workspace.  If valid, allows the processing to continue.
+        # This checks that the output workspace is set to a Geodatabase.
+        if self.validate_workspace(output_workspace):
+            # Create the output feature class and create a list of the fields in the feature class
+            # that can be used in the Insert Cursor
+            out_fc, out_fields = self.create_fc(output_workspace)
+
+            for document in individual_files:
+                if os.path.exists(document):
+                    file_name = os.path.split(document)[1]
+                    file_ext = os.path.splitext(document)[1]
+                    if file_ext == '.txt':
+                        try:
+                            with open(document, 'r') as text:
+                                lines = text.read()
+                                self.process_text(nlp, lines, document, out_fc, out_fields)
+                        except IOError:
+                            arcpy.AddMessage(file_name + " is not accessible")
+
+                    else:
+                        arcpy.AddError(file_ext + " is not a supported file extension.")
+                        arcpy.AddError("Please limit data to text files.")
         
         return
